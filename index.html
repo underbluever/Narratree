@@ -1572,6 +1572,7 @@
         let nodeIdCounter = 0;
         let hasUnsavedChanges = false;
         let lastSavedState = null;
+        let saveFileHandle = null;
         let currentTheme = 'dark';
         let attachOrderCounter = 0;
 
@@ -6511,45 +6512,69 @@ function updateConditionPreview() {
         }
 
 
+        async function writeJsonToHandle(handle, jsonStr) {
+            const writable = await handle.createWritable();
+            await writable.write(jsonStr);
+            await writable.close();
+        }
+
+        function downloadJson(jsonStr, filename) {
+            const blob = new Blob([jsonStr], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(url);
+        }
+
         // ---- Final overrides: project-aware Save/Load/Export (wins over earlier defs) ----
-        saveToFile = function () {
-            if (project) {
-                const obj = projectExportObject();
-                const jsonStr = JSON.stringify(obj, null, 2);
+        saveToFile = async function () {
+            const usingProject = !!project;
+            const obj = usingProject ? projectExportObject() : getDataObject();
+            const jsonStr = JSON.stringify(obj, null, 2);
+            const filename = usingProject
+                ? 'narrative_project_' + new Date().toISOString().slice(0, 10) + '.json'
+                : 'narrative_flow_' + new Date().toISOString().slice(0, 10) + '.json';
 
-                const blob = new Blob([jsonStr], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'narrative_project_' + new Date().toISOString().slice(0, 10) + '.json';
-                a.click();
-                URL.revokeObjectURL(url);
-
+            const markSaved = () => {
                 lastSavedState = jsonStr;
                 hasUnsavedChanges = false;
                 updateSaveIndicator();
-                scheduleLocalAutosave();
-            } else {
-                // Fallback: graph-only
-                const data = getDataObject();
-                const jsonStr = JSON.stringify(data, null, 2);
-                const blob = new Blob([jsonStr], { type: 'application/json' });
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'narrative_flow_' + new Date().toISOString().slice(0, 10) + '.json';
-                a.click();
-                URL.revokeObjectURL(url);
+                if (usingProject && typeof scheduleLocalAutosave === 'function') {
+                    scheduleLocalAutosave();
+                }
+            };
 
-                lastSavedState = jsonStr;
-                hasUnsavedChanges = false;
-                updateSaveIndicator();
+            if ('showSaveFilePicker' in window) {
+                try {
+                    if (!saveFileHandle) {
+                        saveFileHandle = await window.showSaveFilePicker({
+                            suggestedName: filename,
+                            types: [{
+                                description: 'JSON',
+                                accept: { 'application/json': ['.json'] }
+                            }]
+                        });
+                    }
+                    await writeJsonToHandle(saveFileHandle, jsonStr);
+                    markSaved();
+                    return;
+                } catch (err) {
+                    if (err && err.name === 'AbortError') return;
+                    console.warn('Save failed; falling back to download.', err);
+                    saveFileHandle = null;
+                }
             }
+
+            downloadJson(jsonStr, filename);
+            markSaved();
         };
 
         loadFromFile = function (event) {
             const file = event.target.files[0];
             if (!file) return;
+            saveFileHandle = null;
 
             if (hasUnsavedChanges) {
                 if (!confirm('You have unsaved changes. Load anyway?')) {
